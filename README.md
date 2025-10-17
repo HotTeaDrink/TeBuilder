@@ -22,7 +22,7 @@ It’s designed for modular assembly code organized into functional subdirectori
 │   └── features/     # optional
 ├── include/          # assembly includes (syscalls, constants, macros)
 ├── tests/            # C test code; subdirs allowed (unit/, integration/, ...)
-├── docs/             # generated docs / listings
+├── docs/             # generated docs
 └── build/            # build outputs (object files, binaries) — ignored by VCS
 ```
 
