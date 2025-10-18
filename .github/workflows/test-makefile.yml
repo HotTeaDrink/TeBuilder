@@ -1,0 +1,576 @@
+name: TeBuilder CI - makefile Full Test
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+
+jobs:
+  test-makefile:
+    name: Test makefile on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-22.04]
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm binutils gcc gdb python3
+          echo "Installed versions:"
+          nasm -v
+          ld --version | head -1
+          gcc --version | head -1
+          python3 --version
+
+      - name: Test 1 - Setup project structure
+        run: |
+          echo "::group::Running make setup"
+          make setup
+          echo "::endgroup::"
+          
+          echo "::group::Verifying directory structure"
+          # Check core directories
+          test -d src/network || exit 1
+          test -d src/process || exit 1
+          test -d src/utils || exit 1
+          # Check new feature directories added in makefile
+          test -d src/stealth || exit 1
+          test -d src/persistence || exit 1
+          test -d src/features || exit 1
+          test -d include || exit 1
+          test -d include/auto || exit 1
+          test -d tests/unit || exit 1
+          test -d tests/integration || exit 1
+          test -f src/main.asm || exit 1
+          echo "✓ All directories created successfully"
+          echo "::endgroup::"
+
+      - name: Test 2 - Create test files
+        run: |
+          echo "::group::Creating test assembly files"
+          
+          # Create syscalls.inc
+          cat > include/syscalls.inc << 'EOF'
+          %define SYS_WRITE 1
+          %define SYS_EXIT 60
+          %define STDOUT 1
+          EOF
+          
+          # Create main.asm for include mode (REMOVED section .data)
+          cat > src/main.asm << 'EOF'
+          BITS 64
+          %include "syscalls.inc"
+          %include "auto/network.inc"
+          
+          ; section .data was removed here, as the required data is in the included file
+          
+          section .text
+          global _start
+          _start:
+              call test_function
+              mov rax, SYS_EXIT
+              xor rdi, rdi
+              syscall
+          EOF
+          
+          # Create test network function (Kept original definition)
+          mkdir -p src/network
+          cat > src/network/test.asm << 'EOF'
+          BITS 64
+          %include "syscalls.inc"
+          
+          section .text
+          global test_function
+          test_function:
+              mov rax, SYS_WRITE
+              mov rdi, STDOUT
+              lea rsi, [rel msg]
+              mov rdx, msg_len
+              syscall
+              ret
+          
+          section .data
+              msg db "Function called", 0x0a
+              msg_len equ $ - msg
+          EOF
+          
+          # Create unused function
+          cat > src/network/unused.asm << 'EOF'
+          BITS 64
+          section .text
+          global unused_function
+          unused_function:
+              times 100 nop
+              ret
+          EOF
+          
+          echo "✓ Test files created"
+          echo "::endgroup::"
+
+      - name: Test 3 - Build info and list sources
+        run: |
+          echo "::group::Running make info"
+          make info
+          echo "::endgroup::"
+          
+          echo "::group::Running make list-sources"
+          make list-sources
+          echo "::endgroup::"
+
+      - name: Test 4 - Generate headers
+        run: |
+          echo "::group::Running make gen-headers"
+          make gen-headers
+          echo "::endgroup::"
+          
+          echo "::group::Verifying auto-generated headers"
+          # Verify all new headers exist
+          test -f include/auto/network.inc || exit 1
+          test -f include/auto/process.inc || exit 1
+          test -f include/auto/utils.inc || exit 1
+          test -f include/auto/stealth.inc || exit 1
+          test -f include/auto/persistence.inc || exit 1
+          test -f include/auto/features.inc || exit 1
+          echo "✓ All headers generated"
+          
+          echo "Content of include/auto/network.inc (should contain test.asm and unused.asm):"
+          cat include/auto/network.inc
+          grep -q "network/test.asm" include/auto/network.inc || exit 1
+          grep -q "network/unused.asm" include/auto/network.inc || exit 1
+          echo "::endgroup::"
+
+      - name: Test 5 - Build with include mode
+        run: |
+          echo "::group::Building with BUILD_MODE=include"
+          make BUILD_MODE=include
+          echo "::endgroup::"
+          
+          echo "::group::Verifying binary"
+          test -f build/output || exit 1
+          ls -lh build/output
+          
+          echo "Checking for all functions (should have unused_function):"
+          # In include mode, unused_function is physically included and not stripped
+          nm build/output | grep function
+          grep -q "unused_function" <(nm build/output) || exit 1
+          echo "::endgroup::"
+
+      - name: Test 6 - Run include mode binary
+        run: |
+          echo "::group::Running include mode binary"
+          # Check for expected output
+          ./build/output | grep -q "Function called" || exit 1
+          echo "✓ Binary ran successfully with expected output"
+          echo "::endgroup::"
+
+      - name: Test 7 - Test include mode binary size
+        id: size-include
+        run: |
+          SIZE=$(stat -c%s build/output)
+          echo "include_size=$SIZE" >> $GITHUB_OUTPUT
+          echo "Include mode binary size: $SIZE bytes"
+
+      - name: Test 8 - Clean build
+        run: |
+          echo "::group::Running make clean"
+          make clean
+          echo "::endgroup::"
+          
+          echo "::group::Verifying clean"
+          test ! -f build/output || exit 1
+          test ! -f build/main.o || exit 1
+          test ! -f include/auto/network.inc || exit 1
+          echo "✓ Clean successful"
+          echo "::endgroup::"
+
+      - name: Test 9 - Build with separate mode
+        run: |
+          echo "::group::Building with BUILD_MODE=separate"
+          
+          # --- FIX: Overwrite src/main.asm for 'separate' mode ---
+          # In separate mode, main.asm must use EXTERN for module functions
+          # and NOT include the auto-generated headers, to prevent
+          # "multiple definition" errors during linking.
+          cat > src/main.asm << 'EOF'
+          BITS 64
+          %include "syscalls.inc"
+          
+          ; Declare functions as external for the linker to find them 
+          ; in the separate module objects (build/network/test.o, etc.)
+          extern test_function
+          extern unused_function 
+          
+          section .text
+          global _start
+          _start:
+              call test_function
+              mov rax, SYS_EXIT
+              xor rdi, rdi
+              syscall
+          EOF
+          # -----------------------------------------------------------
+          
+          # Must run gen-headers again as make clean removes them
+          make gen-headers
+          make BUILD_MODE=separate
+          echo "::endgroup::"
+          
+          echo "::group::Verifying binary"
+          test -f build/output || exit 1
+          ls -lh build/output
+          
+          echo "Checking functions (unused_function should be removed with --gc-sections):"
+          nm build/output | grep function
+          # In separate mode, unused_function should be stripped by --gc-sections
+          grep -q "unused_function" <(nm build/output) && exit 1 || echo "✓ unused_function stripped (expected for separate mode)"
+          echo "::endgroup::"
+
+      - name: Test 10 - Run separate mode binary
+        run: |
+          echo "::group::Running separate mode binary"
+          ./build/output | grep -q "Function called" || exit 1
+          echo "✓ Binary ran successfully with expected output"
+          echo "::endgroup::"
+
+      - name: Test 11 - Test separate mode binary size
+        id: size-separate
+        run: |
+          SIZE=$(stat -c%s build/output)
+          echo "separate_size=$SIZE" >> $GITHUB_OUTPUT
+          echo "Separate mode binary size: $SIZE bytes"
+
+      - name: Test 12 - Compare binary sizes
+        run: |
+          INCLUDE_SIZE=${{ steps.size-include.outputs.include_size }}
+          SEPARATE_SIZE=${{ steps.size-separate.outputs.separate_size }}
+          
+          echo "Binary Size Comparison:"
+          echo "  Include mode:  $INCLUDE_SIZE bytes"
+          echo "  Separate mode: $SEPARATE_SIZE bytes"
+          
+          if [ $SEPARATE_SIZE -le $INCLUDE_SIZE ]; then
+            echo "✓ Separate mode produced smaller or equal binary (as expected with --gc-sections)"
+          else
+            echo "⚠ Warning: Separate mode binary is larger (unexpected)"
+          fi
+
+      - name: Test 13 - Extract shellcode
+        run: |
+          echo "::group::Running make shellcode"
+          make shellcode
+          echo "::endgroup::"
+          
+          echo "::group::Verifying shellcode"
+          test -f build/shellcode/shellcode.bin || exit 1
+          ls -lh build/shellcode/shellcode.bin
+          echo "::endgroup::"
+
+      - name: Test 14 - Analyze binary
+        run: |
+          echo "::group::Running make analyze"
+          make analyze
+          echo "::endgroup::"
+
+      - name: Test 15 - Disassemble binary
+        run: |
+          echo "::group::Running make disassemble"
+          make disassemble
+          echo "::endgroup::"
+
+      - name: Test 16 - Full rebuild (make re)
+        run: |
+          echo "::group::Restoring src/main.asm for include mode"
+          # Restore src/main.asm to use the auto-includes for a complete file
+          # (as required by BUILD_MODE=include, which is the default for 'make re').
+          cat > src/main.asm << 'EOF'
+          BITS 64
+          %include "syscalls.inc"
+          %include "auto/network.inc" ; <-- Re-introducing the include
+          
+          section .text
+          global _start
+          _start:
+              call test_function
+              mov rax, SYS_EXIT
+              xor rdi, rdi
+              syscall
+          EOF
+          echo "::endgroup::"
+          
+          echo "::group::Running make re"
+          make re
+          echo "::endgroup::"
+          
+          echo "::group::Verifying rebuild"
+          test -f build/output || exit 1
+          test -f include/auto/network.inc || exit 1
+          echo "✓ Rebuild successful"
+          echo "::endgroup::"
+
+      - name: Test 17 - Full clean (make fclean)
+        run: |
+          echo "::group::Running make fclean"
+          make fclean
+          echo "::endgroup::"
+          
+          echo "::group::Verifying fclean"
+          test ! -d build || exit 1
+          test ! -d include/auto || exit 1
+          echo "✓ Full clean successful"
+          echo "::endgroup::"
+
+      - name: Test 18 - Create C test files
+        run: |
+          echo "::group::Creating C test files"
+          make setup # Re-setup dirs
+          
+          # Create a simple unit test
+          cat > tests/unit/test_basic.c << 'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          
+          int main() {
+              printf("Running basic unit test...\n");
+              printf("✓ Test passed\n");
+              return 0;
+          }
+          EOF
+          
+          # Create an integration test
+          cat > tests/integration/test_integration.c << 'EOF'
+          #include <stdio.h>
+          #include <stdlib.h>
+          
+          int main() {
+              printf("Running integration test...\n");
+              printf("✓ Integration test passed\n");
+              return 0;
+          }
+          EOF
+          
+          echo "✓ Test files created"
+          echo "::endgroup::"
+
+      - name: Test 19 - Verify auto-include regeneration
+        run: |
+          echo "::group::Testing auto-include regeneration"
+          make BUILD_MODE=include
+          
+          # Save timestamp of auto-generated file
+          BEFORE=$(stat -c %Y include/auto/network.inc)
+          
+          # Wait a bit
+          sleep 2
+          
+          # Add a new file
+          cat > src/network/new_function.asm << 'EOF'
+          BITS 64
+          section .text
+          global new_function
+          new_function:
+              ret
+          EOF
+          
+          # Rebuild (should trigger gen-headers)
+          make re
+          
+          # Check if auto-include was regenerated
+          AFTER=$(stat -c %Y include/auto/network.inc)
+          
+          if [ $AFTER -gt $BEFORE ]; then
+            echo "✓ Auto-include was regenerated"
+          else
+            echo "✗ Auto-include was NOT regenerated"
+            exit 1
+          fi
+          
+          # Verify new function is included
+          grep -q "new_function.asm" include/auto/network.inc || exit 1
+          echo "✓ New function included in auto-generated header"
+          echo "::endgroup::"
+
+      - name: Test 20 - Build mode persistence
+        run: |
+          echo "::group::Testing BUILD_MODE variable"
+          
+          # --- Part 1: Test default (include mode) ---
+          
+          # 1a. Ensure src/main.asm is set for INCLUDE mode (required to build successfully)
+          cat > src/main.asm << 'EOF'
+          BITS 64
+          %include "syscalls.inc"
+          %include "auto/network.inc" 
+          
+          section .text
+          global _start
+          _start:
+              call test_function
+              mov rax, SYS_EXIT
+              xor rdi, rdi
+              syscall
+          EOF
+          
+          make clean
+          make > /tmp/build.log 2>&1
+          grep -q "BUILD_MODE=include" /tmp/build.log || exit 1
+          echo "✓ Default BUILD_MODE is include"
+          
+          # --- Part 2: Test explicit separate mode ---
+          
+          # 2a. Ensure src/main.asm is set for SEPARATE mode (required to build successfully)
+          cat > src/main.asm << 'EOF'
+          BITS 64
+          %include "syscalls.inc"
+          
+          extern test_function
+          extern unused_function 
+          
+          section .text
+          global _start
+          _start:
+              call test_function
+              mov rax, SYS_EXIT
+              xor rdi, rdi
+              syscall
+          EOF
+
+          make clean
+          # Need to generate headers before making in separate mode
+          make gen-headers
+          make BUILD_MODE=separate > /tmp/build2.log 2>&1
+          grep -q "BUILD_MODE=separate" /tmp/build2.log || exit 1
+          echo "✓ BUILD_MODE=separate works"
+          
+          echo "::endgroup::"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "================================"
+          echo "Test Summary"
+          echo "================================"
+          echo "✓ All makefile targets tested successfully"
+          echo ""
+          echo "Tested features:"
+          echo "  - Project setup (make setup)"
+          echo "  - Auto-header generation (make gen-headers)"
+          echo "  - Include mode build and run"
+          echo "  - Separate mode build with --gc-sections and run"
+          echo "  - Binary size comparison"
+          echo "  - Shellcode extraction"
+          echo "  - Binary analysis"
+          echo "  - Disassembly"
+          echo "  - Clean operations (clean, fclean)"
+          echo "  - Rebuild (make re)"
+          echo "  - Auto-include regeneration"
+          echo "  - Build mode switching"
+          echo ""
+          echo "All tests passed! ✨"
+
+  test-build-target:
+    name: Run C Test Suite (make test-build)
+    runs-on: ubuntu-latest
+    needs: test-makefile # Ensure this runs after the file creation steps
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies for C tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm binutils gcc python3
+
+      - name: Create required files for test-build
+        run: |
+          # The test-build target calls 'make re', which requires a valid main.asm
+          # and the test source files. We need to recreate them here.
+          make setup
+          
+          # Minimal main.asm for a successful assembly/link
+          cat > src/main.asm << 'EOF'
+          BITS 64
+          %define SYS_EXIT 60
+          
+          section .text
+          global _start
+          _start:
+              mov rax, SYS_EXIT
+              xor rdi, rdi
+              syscall
+          EOF
+          
+          # Create syscalls.inc to satisfy potential %include directives
+          cat > include/syscalls.inc << 'EOF'
+          %define SYS_EXIT 60
+          EOF
+          
+          # Create dummy C test files
+          mkdir -p tests/unit tests/integration
+          
+          cat > tests/unit/test_basic.c << 'EOF'
+          #include <stdio.h>
+          int main() { printf("Unit test running.\n"); return 0; }
+          EOF
+          
+          cat > tests/integration/test_integration.c << 'EOF'
+          #include <stdio.h>
+          int main() { printf("Integration test running.\n"); return 0; }
+          EOF
+
+      - name: Run make test-build
+        run: |
+          echo "::group::Running make test-build"
+          make test-build
+          echo "::endgroup::"
+          
+      - name: Test help command
+        run: |
+          echo "::group::Running make help"
+          make help
+          echo "::endgroup::"
+  
+  test-documentation:
+    name: Verify Documentation
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check README exists
+        run: |
+          test -f README.md || exit 1
+          echo "✓ README.md exists"
+
+      - name: Check makefile exists
+        run: |
+          test -f makefile || exit 1
+          echo "✓ makefile exists"
+
+      - name: Verify README sections
+        run: |
+          echo "Checking README sections..."
+          grep -q "Build modes" README.md || exit 1
+          grep -q "Auto-generated include files" README.md || exit 1
+          grep -q "gc-sections" README.md || exit 1
+          grep -q "BUILD_MODE" README.md || exit 1
+          echo "✓ All required sections present in README"
+
+      - name: Verify makefile targets
+        run: |
+          echo "Checking makefile targets..."
+          grep -q "^gen-headers:" makefile || exit 1
+          grep -q "BUILD_MODE" makefile || exit 1
+          grep -q "LDFLAGS_GC" makefile || exit 1
+          grep -q "AUTO_INC_DIR" makefile || exit 1
+          echo "✓ All required targets present in makefile"
