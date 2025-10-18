@@ -23,7 +23,7 @@ It's designed for modular assembly code organized into functional subdirectories
 ├── include/          # assembly includes (syscalls, constants, macros)
 │   └── auto/         # auto-generated aggregated include files (*.inc)
 ├── tests/            # C test code; subdirs allowed (unit/, integration/, ...)
-├── docs/             # generated docs / listings
+├── docs/             # generated docs
 └── build/            # build outputs (object files, binaries) — ignored by VCS
 ```
 
