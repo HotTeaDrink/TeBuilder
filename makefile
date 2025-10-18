@@ -12,6 +12,7 @@ NM ?= nm
 ASMFLAGS ?= -f elf64 -I include/
 DBG_FLAGS ?= -g -F dwarf
 LDFLAGS ?= -nostdlib
+LDFLAGS_GC ?= -nostdlib --gc-sections  # Garbage collection for unused functions
 
 # Directories
 SRC_DIR   := src
@@ -28,7 +29,7 @@ BIN = $(BUILD_DIR)/output
 
 # Build mode: 'include' or 'separate'
 # - include: Everything included in main.asm via auto/*.inc (only main.o linked)
-# - separate: Each .asm compiled separately and linked together
+# - separate: Each .asm compiled separately and linked together (with --gc-sections)
 BUILD_MODE ?= include
 
 # Colors for output
@@ -66,11 +67,14 @@ FEATURES_OBJS := $(call ASM_TO_OBJ,$(FEATURES_SRCS))
 CORE_OBJS := $(NETWORK_OBJS) $(PROCESS_OBJS) $(UTILS_OBJS)
 ALL_OBJS  := $(CORE_OBJS) $(STEALTH_OBJS) $(PERSIST_OBJS) $(FEATURES_OBJS)
 
-# Conditional object files based on build mode
+# Conditional object files and linker flags based on build mode
 ifeq ($(BUILD_MODE),include)
     LINK_OBJS := $(BUILD_DIR)/main.o
+    LINK_FLAGS := $(LDFLAGS)
 else
     LINK_OBJS := $(BUILD_DIR)/main.o $(ALL_OBJS)
+    LINK_FLAGS := $(LDFLAGS_GC)
+    ASMFLAGS += -felf64
 endif
 
 # Test runner behavior
@@ -234,7 +238,7 @@ $(BUILD_DIR)/main.o: $(SRC_DIR)/main.asm $(AUTO_HEADERS) | directories-build
 # Link based on BUILD_MODE
 $(BIN): $(LINK_OBJS) | directories-build
 	@echo -e "$(GREEN)Linking $(BIN) (BUILD_MODE=$(BUILD_MODE))...$(NC)"
-	$(LD) $(LDFLAGS) -o $(BIN) $(LINK_OBJS)
+	$(LD) $(LINK_FLAGS) -o $(BIN) $(LINK_OBJS)
 	@echo -e "$(GREEN)✓ Built $(BIN)$(NC)"
 
 # -----------------------------------------------------------------------------
