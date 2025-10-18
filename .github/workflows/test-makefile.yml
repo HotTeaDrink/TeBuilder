@@ -1,4 +1,4 @@
-name: TeBuilder CI - Makefile Full Test
+name: TeBuilder CI - makefile Full Test
 
 on:
   push:
@@ -9,7 +9,7 @@ on:
 
 jobs:
   test-makefile:
-    name: Test Makefile on ${{ matrix.os }}
+    name: Test makefile on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     
     strategy:
@@ -42,7 +42,7 @@ jobs:
           test -d src/network || exit 1
           test -d src/process || exit 1
           test -d src/utils || exit 1
-          # Check new feature directories added in Makefile
+          # Check new feature directories added in makefile
           test -d src/stealth || exit 1
           test -d src/persistence || exit 1
           test -d src/features || exit 1
@@ -65,15 +65,13 @@ jobs:
           %define STDOUT 1
           EOF
           
-          # Create main.asm for include mode
+          # Create main.asm for include mode (REMOVED section .data)
           cat > src/main.asm << 'EOF'
           BITS 64
           %include "syscalls.inc"
           %include "auto/network.inc"
           
-          section .data
-              msg db "Test", 0x0a
-              msg_len equ $ - msg
+          ; section .data was removed here, as the required data is in the included file
           
           section .text
           global _start
@@ -84,7 +82,7 @@ jobs:
               syscall
           EOF
           
-          # Create test network function
+          # Create test network function (Kept original definition)
           mkdir -p src/network
           cat > src/network/test.asm << 'EOF'
           BITS 64
@@ -105,7 +103,7 @@ jobs:
               msg_len equ $ - msg
           EOF
           
-          # Create unused function (for separate mode's --gc-sections test)
+          # Create unused function
           cat > src/network/unused.asm << 'EOF'
           BITS 64
           section .text
@@ -382,7 +380,7 @@ jobs:
           echo "================================"
           echo "Test Summary"
           echo "================================"
-          echo "✓ All Makefile targets tested successfully"
+          echo "✓ All makefile targets tested successfully"
           echo ""
           echo "Tested features:"
           echo "  - Project setup (make setup)"
@@ -476,10 +474,10 @@ jobs:
           test -f README.md || exit 1
           echo "✓ README.md exists"
 
-      - name: Check Makefile exists
+      - name: Check makefile exists
         run: |
-          test -f Makefile || exit 1
-          echo "✓ Makefile exists"
+          test -f makefile || exit 1
+          echo "✓ makefile exists"
 
       - name: Verify README sections
         run: |
@@ -490,11 +488,11 @@ jobs:
           grep -q "BUILD_MODE" README.md || exit 1
           echo "✓ All required sections present in README"
 
-      - name: Verify Makefile targets
+      - name: Verify makefile targets
         run: |
-          echo "Checking Makefile targets..."
-          grep -q "^gen-headers:" Makefile || exit 1
-          grep -q "BUILD_MODE" Makefile || exit 1
-          grep -q "LDFLAGS_GC" Makefile || exit 1
-          grep -q "AUTO_INC_DIR" Makefile || exit 1
-          echo "✓ All required targets present in Makefile"
+          echo "Checking makefile targets..."
+          grep -q "^gen-headers:" makefile || exit 1
+          grep -q "BUILD_MODE" makefile || exit 1
+          grep -q "LDFLAGS_GC" makefile || exit 1
+          grep -q "AUTO_INC_DIR" makefile || exit 1
+          echo "✓ All required targets present in makefile"
