@@ -402,14 +402,50 @@ jobs:
         run: |
           echo "::group::Testing BUILD_MODE variable"
           
-          # Test that default is include
+          # --- Part 1: Test default (include mode) ---
+          
+          # 1a. Ensure src/main.asm is set for INCLUDE mode (required to build successfully)
+          cat > src/main.asm << 'EOF'
+          BITS 64
+          %include "syscalls.inc"
+          %include "auto/network.inc" 
+          
+          section .text
+          global _start
+          _start:
+              call test_function
+              mov rax, SYS_EXIT
+              xor rdi, rdi
+              syscall
+          EOF
+          
           make clean
           make > /tmp/build.log 2>&1
           grep -q "BUILD_MODE=include" /tmp/build.log || exit 1
           echo "✓ Default BUILD_MODE is include"
           
-          # Test explicit separate mode
+          # --- Part 2: Test explicit separate mode ---
+          
+          # 2a. Ensure src/main.asm is set for SEPARATE mode (required to build successfully)
+          cat > src/main.asm << 'EOF'
+          BITS 64
+          %include "syscalls.inc"
+          
+          extern test_function
+          extern unused_function 
+          
+          section .text
+          global _start
+          _start:
+              call test_function
+              mov rax, SYS_EXIT
+              xor rdi, rdi
+              syscall
+          EOF
+
           make clean
+          # Need to generate headers before making in separate mode
+          make gen-headers
           make BUILD_MODE=separate > /tmp/build2.log 2>&1
           grep -q "BUILD_MODE=separate" /tmp/build2.log || exit 1
           echo "✓ BUILD_MODE=separate works"
