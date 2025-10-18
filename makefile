@@ -318,7 +318,7 @@ analyze:
 	@null_count=$$(hexdump -C $(BIN) | grep -o " 00" | wc -l); \
 	if [ $$null_count -gt 0 ]; then \
 		echo -e "$(RED)⚠ Found $$null_count null bytes:$(NC)"; \
-		hexdump -C $(BIN) | grep " 00" | head -10; \
+		hexdump -C $(BIN) | grep " 00" | head -10 || true; \
 	else \
 		echo -e "$(GREEN)✓ No null bytes detected$(NC)"; \
 	fi
